@@ -1,0 +1,4 @@
+[submodule "aur-xiezuo-bin"]
+	path = aur-xiezuo-bin
+	url = ../aur-xiezuo-bin
+	branch = master
