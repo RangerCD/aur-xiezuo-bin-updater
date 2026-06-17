@@ -1,0 +1,108 @@
+name: Update xiezuo-bin
+
+on:
+  schedule:
+    # Run daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm git curl base-devel github-cli
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Configure git safe directory
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/aur-xiezuo-bin"
+
+      - name: Run update script
+        id: update
+        run: |
+          chmod +x update.sh
+          ./update.sh
+          
+          # Check if submodule has changes
+          cd aur-xiezuo-bin
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No changes detected in submodule"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            
+            # Get new version for branch name and PR title
+            new_version=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
+            new_pkgrel=$(grep '^pkgrel=' PKGBUILD | cut -d= -f2)
+            echo "new_version=${new_version}" >> $GITHUB_OUTPUT
+            echo "new_pkgrel=${new_pkgrel}" >> $GITHUB_OUTPUT
+            echo "Changes detected: version ${new_version}-${new_pkgrel}"
+          fi
+
+      - name: Create PR in submodule
+        if: steps.update.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          cd aur-xiezuo-bin
+          
+          VERSION="${{ steps.update.outputs.new_version }}"
+          PKGREL="${{ steps.update.outputs.new_pkgrel }}"
+          BRANCH_NAME="update-${VERSION}-${PKGREL}"
+          DATE=$(date +%Y-%m-%d)
+          
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Get submodule remote URL and convert to absolute URL
+          REMOTE_URL=$(git remote get-url origin)
+          
+          # Convert relative path to absolute URL if needed
+          if [[ "$REMOTE_URL" == ../* ]]; then
+            REPO_OWNER="${{ github.repository_owner }}"
+            REMOTE_URL="https://github.com/${REPO_OWNER}/aur-xiezuo-bin.git"
+            git remote set-url origin "$REMOTE_URL"
+          fi
+          
+          echo "Remote URL: $REMOTE_URL"
+          
+          # Check if branch already exists
+          if git ls-remote --heads origin "$BRANCH_NAME" | grep -q "$BRANCH_NAME"; then
+            echo "Branch $BRANCH_NAME already exists, skipping..."
+            exit 0
+          fi
+          
+          # Create new branch
+          git checkout -b "$BRANCH_NAME"
+          
+          # Commit changes
+          git add -A
+          git commit -m "Update to version ${VERSION}-${PKGREL}"
+          
+          # Push branch to remote
+          git push -u origin "$BRANCH_NAME"
+          
+          # Create PR
+          PR_TITLE="Update xiezuo-bin to ${VERSION}-${PKGREL}"
+          PR_BODY="This PR was automatically created by the update workflow on ${DATE}. Please verify the changes before merging."
+          
+          # Create PR using gh CLI
+          gh pr create \
+            --repo "${{ github.repository_owner }}/aur-xiezuo-bin" \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --base master \
+            --head "$BRANCH_NAME"
