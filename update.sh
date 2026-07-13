@@ -27,13 +27,25 @@ download_pkg() {
 	tmpfile="${outdir}/.download.tmp"
 
 	printf '==> downloading %s\n' "${url}" >&2
-	curl -fsSL -D "${headers}" -o "${tmpfile}" "${url}"
+	if ! curl -fSL -D "${headers}" -o "${tmpfile}" "${url}"; then
+		rm -f "${headers}" "${tmpfile}"
+		printf 'error: download failed: %s\n' "${url}" >&2
+		exit 1
+	fi
 
 	filename=$(grep -i '^content-disposition:' "${headers}" | tail -1 \
 		| sed -n "s/.*filename\\*=utf-8''\\([^[:space:]]*\\).*/\\1/p")
 	rm -f "${headers}"
 
-	[[ -n "${filename}" ]] || { printf 'error: failed to get filename from response headers: %s\n' "${url}" >&2; exit 1; }
+	[[ -n "${filename}" ]] || { rm -f "${tmpfile}"; printf 'error: failed to get filename from response headers: %s\n' "${url}" >&2; exit 1; }
+
+	# verify the downloaded file is a valid .deb by listing its archive entries
+	if ! ar t "${tmpfile}" >/dev/null 2>&1; then
+		rm -f "${tmpfile}"
+		printf 'error: downloaded file is not a valid .deb package: %s\n' "${url}" >&2
+		exit 1
+	fi
+	printf '==> verified .deb package integrity\n' >&2
 
 	mv "${tmpfile}" "${outdir}/${filename}"
 	echo "${outdir}/${filename}"
